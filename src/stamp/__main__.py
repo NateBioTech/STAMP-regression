@@ -73,12 +73,13 @@ def _run_cli(args: argparse.Namespace) -> None:
                 default_slide_mpp=config.preprocessing.default_slide_mpp,
                 brightness_cutoff=config.preprocessing.brightness_cutoff,
                 canny_cutoff=config.preprocessing.canny_cutoff,
-                cache_tiles_ext=config.preprocessing.cache_tiles_ext,
-                generate_hash=config.preprocessing.generate_hash,
             )
 
         case "train":
-            from stamp.modeling.train import train_categorical_model_
+            # OLD classification line:
+            # from stamp.modeling.train import train_categorical_model_
+            # NEW regression line:
+            from stamp.modeling.train import train_regression_model_  # <-- changed
 
             if config.training is None:
                 raise ValueError("no training configuration supplied")
@@ -88,31 +89,42 @@ def _run_cli(args: argparse.Namespace) -> None:
                 "using the following configuration:\n"
                 f"{yaml.dump(config.training.model_dump(mode='json'))}"
             )
-            # We pass every parameter explicitly so our type checker can do its work.
-            train_categorical_model_(
-                output_dir=config.training.output_dir,
+
+            # OLD classification call:
+            # train_categorical_model_(
+            #     output_dir=config.training.output_dir,
+            #     clini_table=config.training.clini_table,
+            #     ...
+            # )
+
+            # NEW regression call:
+            train_regression_model_(
                 clini_table=config.training.clini_table,
                 slide_table=config.training.slide_table,
                 feature_dir=config.training.feature_dir,
+                output_dir=config.training.output_dir,
                 patient_label=config.training.patient_label,
-                ground_truth_label=config.training.ground_truth_label,
+                # 'ground_truth_label' becomes 'regression_label'
+                regression_label=config.training.ground_truth_label,  # or rename in your config
                 filename_label=config.training.filename_label,
-                categories=config.training.categories,
-                # Dataset and -loader parameters
+                # Dataloader
                 bag_size=config.training.bag_size,
                 num_workers=config.training.num_workers,
-                # Training paramenters
+                # Training
                 batch_size=config.training.batch_size,
                 max_epochs=config.training.max_epochs,
                 patience=config.training.patience,
                 accelerator=config.training.accelerator,
-                # Experimental features
+                # Experimental
                 use_vary_precision_transform=config.training.use_vary_precision_transform,
                 use_alibi=config.training.use_alibi,
             )
 
         case "deploy":
-            from stamp.modeling.deploy import deploy_categorical_model_
+            # OLD classification line:
+            # from stamp.modeling.deploy import deploy_categorical_model_
+            # NEW regression line:
+            from stamp.modeling.deploy import deploy_regression_model_  # <-- changed
 
             if config.deployment is None:
                 raise ValueError("no deployment configuration supplied")
@@ -122,7 +134,16 @@ def _run_cli(args: argparse.Namespace) -> None:
                 "using the following configuration:\n"
                 f"{yaml.dump(config.deployment.model_dump(mode='json'))}"
             )
-            deploy_categorical_model_(
+
+            # OLD classification call:
+            # deploy_categorical_model_(
+            #     output_dir=config.deployment.output_dir,
+            #     checkpoint_paths=config.deployment.checkpoint_paths,
+            #     ...
+            # )
+
+            # NEW regression call:
+            deploy_regression_model_(
                 output_dir=config.deployment.output_dir,
                 checkpoint_paths=config.deployment.checkpoint_paths,
                 clini_table=config.deployment.clini_table,
@@ -136,7 +157,10 @@ def _run_cli(args: argparse.Namespace) -> None:
             )
 
         case "crossval":
-            from stamp.modeling.crossval import categorical_crossval_
+            # OLD classification line:
+            # from stamp.modeling.crossval import categorical_crossval_
+            # NEW regression line:
+            from stamp.modeling.crossval import regression_crossval_  # <-- changed
 
             if config.crossval is None:
                 raise ValueError("no crossval configuration supplied")
@@ -146,25 +170,33 @@ def _run_cli(args: argparse.Namespace) -> None:
                 "using the following configuration:\n"
                 f"{yaml.dump(config.crossval.model_dump(mode='json'))}"
             )
-            categorical_crossval_(
-                output_dir=config.crossval.output_dir,
+
+            # OLD classification call:
+            # categorical_crossval_(
+            #     output_dir=config.crossval.output_dir,
+            #     clini_table=config.crossval.clini_table,
+            #     ...
+            # )
+
+            # NEW regression call:
+            regression_crossval_(
                 clini_table=config.crossval.clini_table,
                 slide_table=config.crossval.slide_table,
                 feature_dir=config.crossval.feature_dir,
+                output_dir=config.crossval.output_dir,
                 patient_label=config.crossval.patient_label,
-                ground_truth_label=config.crossval.ground_truth_label,
+                regression_label=config.crossval.ground_truth_label,  # or rename in your config
                 filename_label=config.crossval.filename_label,
-                categories=config.crossval.categories,
                 n_splits=config.crossval.n_splits,
-                # Dataset and -loader parameters
+                # Dataset and loader
                 bag_size=config.crossval.bag_size,
                 num_workers=config.crossval.num_workers,
-                # Crossval paramenters
+                # Training
                 batch_size=config.crossval.batch_size,
                 max_epochs=config.crossval.max_epochs,
                 patience=config.crossval.patience,
                 accelerator=config.crossval.accelerator,
-                # Experimental Features
+                # Experimental
                 use_vary_precision_transform=config.crossval.use_vary_precision_transform,
                 use_alibi=config.crossval.use_alibi,
             )

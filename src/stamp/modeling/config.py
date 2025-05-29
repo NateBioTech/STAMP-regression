@@ -1,3 +1,7 @@
+"""
+config.py : Configuration models for STAMP-regression
+"""
+
 import os
 from pathlib import Path
 

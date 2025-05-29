@@ -17,7 +17,7 @@ from stamp.modeling.alibi import MultiHeadALiBi
 def feed_forward(
     dim: int,
     hidden_dim: int,
-    dropout: float = 0.5,
+    dropout: float = 0.2, #Change from 0.5
 ) -> nn.Module:
     return nn.Sequential(
         nn.LayerNorm(dim),
@@ -159,7 +159,7 @@ class VisionTransformer(nn.Module):
     def __init__(
         self,
         *,
-        dim_output: int,
+        dim_output: int, # dim_output=1 for regression
         dim_input: int,
         dim_model: int,
         n_layers: int,
@@ -173,7 +173,7 @@ class VisionTransformer(nn.Module):
 
         self.project_features = nn.Sequential(
             nn.Linear(dim_input, dim_model, bias=True),
-            nn.GELU(),
+            nn.GELU(),  #nn.GELU(),
             nn.Dropout(dropout),
         )
 
@@ -187,6 +187,15 @@ class VisionTransformer(nn.Module):
         )
 
         self.mlp_head = nn.Sequential(nn.Linear(dim_model, dim_output))
+
+        """
+        self.mlp_head = nn.Sequential(
+            nn.LayerNorm(dim_model),  # <- new
+            nn.Dropout(dropout), # <- new nath
+            nn.Linear(dim_model, dim_output)
+            #nn.Sigmoid()  # fuerza salida ∈ [0, 1]
+            )
+        """
 
     @jaxtyped(typechecker=beartype)
     def forward(
@@ -236,7 +245,7 @@ class VisionTransformer(nn.Module):
                     alibi_mask=alibi_mask,
                 )
 
-        # Only take class token
+        # Only take class token (CLS)
         bags = bags[:, 0]
 
-        return self.mlp_head(bags)
+        return self.mlp_head(bags)  # [batch, 1]
