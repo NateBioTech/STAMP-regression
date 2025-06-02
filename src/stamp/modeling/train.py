@@ -2,12 +2,12 @@ import shutil
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import cast
-import pandas as pd
 
 import lightning
 import lightning.pytorch
 import lightning.pytorch.accelerators
 import lightning.pytorch.accelerators.accelerator
+import pandas as pd
 import torch
 from lightning.pytorch.accelerators.accelerator import Accelerator
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
@@ -15,25 +15,14 @@ from lightning.pytorch.loggers import CSVLogger
 from sklearn.model_selection import train_test_split
 from torch.utils.data.dataloader import DataLoader
 
-from stamp.modeling.data import (
-    BagDataset,
-    #Category,
-    CoordinatesBatch,
-    GroundTruth,
-    PandasLabel,
-    PatientData,
-    PatientId,
-    dataloader_from_patient_data,
-    filter_complete_patient_data_,
-    patient_to_ground_truth_from_clini_table_,
-    slide_to_patient_from_slide_table_,
-)
-from stamp.modeling.lightning_model import (
-    Bags,
-    BagSizes,
-    EncodedTargets,
-    LitVisionTransformer,
-)
+from stamp.modeling.data import (BagDataset, CoordinatesBatch,  # Category,
+                                 GroundTruth, PandasLabel, PatientData,
+                                 PatientId, dataloader_from_patient_data,
+                                 filter_complete_patient_data_,
+                                 patient_to_ground_truth_from_clini_table_,
+                                 slide_to_patient_from_slide_table_)
+from stamp.modeling.lightning_model import (Bags, BagSizes, EncodedTargets,
+                                            LitVisionTransformer)
 from stamp.modeling.transforms import VaryPrecisionTransform
 
 __author__ = "Marko van Treeck"
@@ -157,9 +146,10 @@ def train_model_(
     torch.set_float32_matmul_precision("high")
 
     model_checkpoint = ModelCheckpoint(
-        monitor="validation_loss",
-        mode="min",
-        filename="checkpoint-{epoch:02d}-{validation_loss:0.3f}",
+        #monitor="validation_loss",
+        monitor="val_r2",
+        mode="max",
+        filename="checkpoint-{epoch:02d}-{val_r2:0.3f}",
     )
 
     csv_logger = CSVLogger(save_dir=output_dir)
@@ -167,7 +157,7 @@ def train_model_(
     trainer = lightning.Trainer(
         default_root_dir=output_dir,
         callbacks=[
-            EarlyStopping(monitor="validation_loss", mode="min", patience=patience),
+            EarlyStopping(monitor="val_r2", mode="max", patience=patience, min_delta=1e-4),
             model_checkpoint,
         ],
         max_epochs=max_epochs,

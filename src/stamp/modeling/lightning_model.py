@@ -11,17 +11,9 @@ from packaging.version import Version
 from torch import Tensor, nn, optim
 from torchmetrics.regression import MeanSquaredError, R2Score
 
-
 import stamp
-from stamp.modeling.data import (
-    Bags,
-    BagSizes,
-    #Category,
-    CoordinatesBatch,
-    EncodedTargets,
-    PandasLabel,
-    PatientId,
-)
+from stamp.modeling.data import (Bags, BagSizes, CoordinatesBatch,  # Category,
+                                 EncodedTargets, PandasLabel, PatientId)
 from stamp.modeling.vision_transformer import VisionTransformer
 
 Loss: TypeAlias = Float[Tensor, ""]
@@ -153,11 +145,19 @@ class LitVisionTransformer(lightning.LightningModule):
 
         if step_name == "validation":
             # TODO this is a bit ugly, we'd like to have `_step` without special cases
+            #self.valid_mse.update(logits, targets)
+            #self.valid_r2.update(logits, targets)
+            #self.log("val_mse", self.valid_mse, on_epoch=True, prog_bar=True)
+            #self.log("val_r2", self.valid_r2, on_epoch=True, prog_bar=True)
+
             self.valid_mse.update(logits, targets)
             self.valid_r2.update(logits, targets)
-            self.log("val_mse", self.valid_mse, on_epoch=True, prog_bar=True)
-            self.log("val_r2", self.valid_r2, on_epoch=True, prog_bar=True)
-
+            self.log_dict({                   
+                "val_mse": self.valid_mse,                    
+                "val_r2":  self.valid_r2,},                
+                on_epoch=True,                
+                prog_bar=True,                
+                sync_dist=True,)
         return loss
 
 
