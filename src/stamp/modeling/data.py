@@ -28,7 +28,7 @@ __license__ = "MIT"
 
 
 PatientId: TypeAlias = str
-GroundTruth: TypeAlias = str
+GroundTruth: TypeAlias = float #str
 FeaturePath = NewType("FeaturePath", Path)
 
 Category: TypeAlias = str
@@ -36,15 +36,18 @@ Category: TypeAlias = str
 # One instance
 _Bag: TypeAlias = Float[Tensor, "tile feature"]
 BagSize: TypeAlias = int
-_EncodedTarget: TypeAlias = Bool[Tensor, "category_is_hot"]  # noqa: F821
+# The old classification line for _EncodedTarget:
+# _EncodedTarget: TypeAlias = Bool[Tensor, "category_is_hot"]  # old classification approach
+_EncodedTarget: TypeAlias = Float[Tensor, ""]  # new line for regression (single float per bag)
 """The ground truth, encoded numerically (currently: one-hot)"""
 _Coordinates: TypeAlias = Float[Tensor, "tile 2"]
 
 # A batch of the above
 Bags: TypeAlias = Float[Tensor, "batch tile feature"]
 BagSizes: TypeAlias = Integer[Tensor, "batch"]  # noqa: F821
-EncodedTargets: TypeAlias = Bool[Tensor, "batch category_is_hot"]
-"""The ground truth, encoded numerically (currently: one-hot)"""
+# The old classification line for EncodedTargets:
+# EncodedTargets: TypeAlias = Bool[Tensor, "batch category_is_hot"]  # old classification approach
+EncodedTargets: TypeAlias = Float[Tensor, "batch"]  # new for regression (batch of floats)
 CoordinatesBatch: TypeAlias = Float[Tensor, "batch tile 2"]
 
 PandasLabel: TypeAlias = str
@@ -65,59 +68,84 @@ def dataloader_from_patient_data(
     *,
     patient_data: Sequence[PatientData[GroundTruth | None]],
     bag_size: int | None,
-    categories: Sequence[Category] | None = None,
+    #categories: Sequence[Category] | None = None,
     batch_size: int,
     shuffle: bool,
     num_workers: int,
     transform: Callable[[Tensor], Tensor] | None,
-) -> tuple[
-    DataLoader[tuple[Bags, CoordinatesBatch, BagSizes, EncodedTargets]],
-    Sequence[Category],
-]:
+) -> DataLoader[tuple[Bags, CoordinatesBatch, BagSizes, EncodedTargets]]:
+    
     """Creates a dataloader from patient data, encoding the ground truths.
 
     Args:
-        categories:
-            Order of classes for one-hot encoding.
-            If `None`, classes are inferred from patient data.
+        patient_data: List of PatientData, each with features and a float label.
+        bag_size: Number of tiles per bag. If None, use all available tiles.
+        batch_size: Number of patients (bags) per batch.
+        shuffle: Whether to shuffle patients during training.
+        num_workers: Number of subprocesses for data loading.
+        transform: Optional transform to apply to tile-level features.
+
+    Returns:
+        A PyTorch DataLoader yielding batches of:
+        (Bags, Coordinates, BagSizes, RegressionTargets)
     """
 
-    raw_ground_truths = np.array([patient.ground_truth for patient in patient_data])
-    categories = (
-        categories if categories is not None else list(np.unique(raw_ground_truths))
-    )
-    one_hot = torch.tensor(raw_ground_truths.reshape(-1, 1) == categories)
+    # CHANGED: instead of one-hot encoding, we parse float values directly 
+    raw_ground_truths = []
+    for patient in patient_data:
+        # Convert ground truth to float (if missing, set to NaN)
+        val = float(patient.ground_truth) if patient.ground_truth is not None else float("nan")
+        raw_ground_truths.append(val)
+
+    # NEW: store as float tensor 
+    gt_tensor = torch.tensor(raw_ground_truths, dtype=torch.float32)
+
+    # SAME: Build the dataset 
     ds = BagDataset(
-        bags=[patient.feature_files for patient in patient_data],
+        bags=[p.feature_files for p in patient_data],
         bag_size=bag_size,
-        ground_truths=one_hot,
+        ground_truths=gt_tensor,       # <- regression: float vector instead of one-hot matrix
         transform=transform,
     )
 
-    return (
-        cast(
-            DataLoader[tuple[Bags, CoordinatesBatch, BagSizes, EncodedTargets]],
-            DataLoader(
-                ds,
-                batch_size=batch_size,
-                shuffle=shuffle,
-                num_workers=num_workers,
-                collate_fn=_collate_to_tuple,
-            ),
-        ),
-        list(categories),
+    # CHANGED: Return just the DataLoader (no category list needed)
+    return DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        collate_fn=_collate_to_tuple,
     )
 
 
 def _collate_to_tuple(
     items: list[tuple[_Bag, _Coordinates, BagSize, _EncodedTarget]],
 ) -> tuple[Bags, CoordinatesBatch, BagSizes, EncodedTargets]:
-    bags = torch.stack([bag for bag, _, _, _ in items])
-    coords = torch.stack([coord for _, coord, _, _ in items])
-    bag_sizes = torch.tensor([bagsize for _, _, bagsize, _ in items])
-    encoded_targets = torch.stack([encoded_target for _, _, _, encoded_target in items])
 
-    return (bags, coords, bag_sizes, encoded_targets)
+    # CHANGED: Use padding since bags may have variable length (regression setting)
+    bags = torch.nn.utils.rnn.pad_sequence(
+        [bag for bag, _, _, _ in items],
+        batch_first=True,
+        padding_value=0.0
+    )
+
+    # SAME: Pad coordinates to align with padded bags
+    coords = torch.nn.utils.rnn.pad_sequence(
+        [coord for _, coord, _, _ in items],
+        batch_first=True,
+        padding_value=0.0
+    )
+
+    # SAME: Capture the actual number of tiles in each original bag
+    bag_sizes = torch.tensor([bagsize for _, _, bagsize, _ in items])
+
+    # CHANGED: For regression, each target is a float instead of a one-hot vector
+    encoded_targets = torch.stack([
+        et if torch.is_tensor(et) else torch.tensor(et, dtype=torch.float32)
+        for _, _, _, et in items
+    ])
+
+    return bags, coords, bag_sizes, encoded_targets
 
 
 @dataclass
@@ -142,8 +170,8 @@ class BagDataset(Dataset[tuple[_Bag, _Coordinates, BagSize, _EncodedTarget]]):
     If `bag_size` is None, all the samples will be used.
     """
 
-    ground_truths: Bool[Tensor, "index category_is_hot"]
-    """The ground truth for each bag, one-hot encoded."""
+    # CHANGED: For regression, the target is a float instead of one-hot
+    ground_truths: Float[Tensor, "index"]
 
     transform: Callable[[Tensor], Tensor] | None
 
@@ -167,7 +195,7 @@ class BagDataset(Dataset[tuple[_Bag, _Coordinates, BagSize, _EncodedTarget]]):
                 feats.append(
                     torch.from_numpy(h5["feats"][:])  # pyright: ignore[reportIndexIssue]
                 )
-                coords_um.append(get_coords(h5).coords_um)
+                coords_um.append(get_coords(h5).coords_um)    # CHANGED: according to new coords accessor
 
         feats = torch.concat(feats).float()
         coords_um = torch.concat(coords_um).float()
@@ -179,14 +207,14 @@ class BagDataset(Dataset[tuple[_Bag, _Coordinates, BagSize, _EncodedTarget]]):
         if self.bag_size is not None:
             return (
                 *_to_fixed_size_bag(feats, coords=coords_um, bag_size=self.bag_size),
-                self.ground_truths[index],
+                self.ground_truths[index].reshape(()),  # CHANGED: shape [] for scalar regression
             )
         else:
             return (
                 feats,
                 coords_um,
                 len(feats),
-                self.ground_truths[index],
+                self.ground_truths[index].reshape(()),  # CHANGED
             )
 
 
@@ -282,17 +310,28 @@ def patient_to_ground_truth_from_clini_table_(
     clini_table_path: Path | TextIO,
     patient_label: PandasLabel,
     ground_truth_label: PandasLabel,
-) -> dict[PatientId, GroundTruth]:
-    """Loads the patients and their ground truths from a clini table."""
+) -> dict[PatientId, float]:
+    """Loads the patients and their ground truths from a clini table.
+
+    Returns:
+        A mapping from patient ID to ground truth as float values.
+    """
+
     clini_df = _read_table(
         clini_table_path,
         usecols=[patient_label, ground_truth_label],
         dtype=str,
     ).dropna()
+
     try:
-        patient_to_ground_truth: Mapping[PatientId, GroundTruth] = clini_df.set_index(
-            patient_label, verify_integrity=True
-        )[ground_truth_label].to_dict()
+        # CHANGED: convert ground truth values explicitly to float (for regression)
+        patient_to_ground_truth: Mapping[PatientId, float] = {
+            pid: float(gt)
+            for pid, gt in clini_df.set_index(
+                patient_label, verify_integrity=True
+            )[ground_truth_label].items()
+        }
+
     except KeyError as e:
         if patient_label not in clini_df:
             raise ValueError(
@@ -307,7 +346,8 @@ def patient_to_ground_truth_from_clini_table_(
         else:
             raise e from e
 
-    return patient_to_ground_truth
+    return dict(patient_to_ground_truth)
+
 
 
 def slide_to_patient_from_slide_table_(

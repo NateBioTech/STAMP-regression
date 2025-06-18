@@ -17,7 +17,7 @@ from stamp.modeling.alibi import MultiHeadALiBi
 def feed_forward(
     dim: int,
     hidden_dim: int,
-    dropout: float = 0.5,
+    dropout: float = 0.2, #Change from 0.5
 ) -> nn.Module:
     return nn.Sequential(
         nn.LayerNorm(dim),
@@ -40,6 +40,8 @@ class SelfAttention(nn.Module):
     ) -> None:
         super().__init__()
         self.heads = num_heads
+        self.attn_weights = None  # NEW: to store attention weights for GradCAM rollout
+
         self.norm = nn.LayerNorm(dim)
 
         if use_alibi:
@@ -75,17 +77,19 @@ class SelfAttention(nn.Module):
         x = self.norm(x)
         match self.mhsa:
             case nn.MultiheadAttention():
-                attn_output, _ = self.mhsa(
+                attn_output, attn_weights = self.mhsa(
                     x,
                     x,
                     x,
-                    need_weights=False,
+                    need_weights=True,   
                     attn_mask=(
                         attn_mask.repeat(self.mhsa.num_heads, 1, 1)
                         if attn_mask is not None
                         else None
                     ),
                 )
+                self.attn_weights = attn_weights.detach()  # NEW: save attn_weights for GradCAM rollout
+
             case MultiHeadALiBi():
                 attn_output = self.mhsa(
                     q=x,
@@ -159,7 +163,7 @@ class VisionTransformer(nn.Module):
     def __init__(
         self,
         *,
-        dim_output: int,
+        dim_output: int, # dim_output=1 for regression
         dim_input: int,
         dim_model: int,
         n_layers: int,
@@ -173,7 +177,7 @@ class VisionTransformer(nn.Module):
 
         self.project_features = nn.Sequential(
             nn.Linear(dim_input, dim_model, bias=True),
-            nn.GELU(),
+            nn.GELU(),  #nn.GELU(),
             nn.Dropout(dropout),
         )
 
@@ -186,7 +190,13 @@ class VisionTransformer(nn.Module):
             use_alibi=use_alibi,
         )
 
-        self.mlp_head = nn.Sequential(nn.Linear(dim_model, dim_output))
+        #self.mlp_head = nn.Sequential(nn.Linear(dim_model, dim_output))
+
+        self.mlp_head = nn.Sequential(
+            nn.Linear(dim_model, dim_output)#,
+            #nn.Softplus()  # Softplus is strictly ≥ 0 and grows unbounded upward
+            )
+
 
     @jaxtyped(typechecker=beartype)
     def forward(
@@ -236,7 +246,7 @@ class VisionTransformer(nn.Module):
                     alibi_mask=alibi_mask,
                 )
 
-        # Only take class token
+        # Only take class token (CLS)
         bags = bags[:, 0]
 
-        return self.mlp_head(bags)
+        return self.mlp_head(bags)  # [batch, 1]

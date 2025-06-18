@@ -1,8 +1,8 @@
-import logging
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import cast
+import pandas as pd
 
 import lightning
 import lightning.pytorch
@@ -17,7 +17,7 @@ from torch.utils.data.dataloader import DataLoader
 
 from stamp.modeling.data import (
     BagDataset,
-    Category,
+    #Category,
     CoordinatesBatch,
     GroundTruth,
     PandasLabel,
@@ -40,19 +40,17 @@ __author__ = "Marko van Treeck"
 __copyright__ = "Copyright (C) 2024 Marko van Treeck"
 __license__ = "MIT"
 
-_logger = logging.getLogger("stamp")
 
-
-def train_categorical_model_(
+def train_regression_model_(
     *,
     clini_table: Path,
     slide_table: Path,
     feature_dir: Path,
     output_dir: Path,
     patient_label: PandasLabel,
-    ground_truth_label: PandasLabel,
+    regression_label: PandasLabel,  
     filename_label: PandasLabel,
-    categories: Sequence[Category] | None,
+    #categories: Sequence[Category] | None,
     # Dataset and -loader parameters
     bag_size: int,
     num_workers: int,
@@ -99,7 +97,7 @@ def train_categorical_model_(
     # Read and parse data from out clini and slide table
     patient_to_ground_truth = patient_to_ground_truth_from_clini_table_(
         clini_table_path=clini_table,
-        ground_truth_label=ground_truth_label,
+        ground_truth_label=regression_label,
         patient_label=patient_label,
     )
     slide_to_patient = slide_to_patient_from_slide_table_(
@@ -119,11 +117,11 @@ def train_categorical_model_(
     # Train the model
     model, train_dl, valid_dl = setup_model_for_training(
         patient_to_data=patient_to_data,
-        categories=categories,
+        #categories=None,
         bag_size=bag_size,
         batch_size=batch_size,
         num_workers=num_workers,
-        ground_truth_label=ground_truth_label,
+        ground_truth_label=regression_label,
         clini_table=clini_table,
         slide_table=slide_table,
         feature_dir=feature_dir,
@@ -149,28 +147,28 @@ def train_model_(
     *,
     output_dir: Path,
     model: LitVisionTransformer,
-    train_dl: DataLoader[tuple[Bags, CoordinatesBatch, BagSizes, EncodedTargets]],
-    valid_dl: DataLoader[tuple[Bags, CoordinatesBatch, BagSizes, EncodedTargets]],
+    train_dl: DataLoader,
+    valid_dl: DataLoader,
     max_epochs: int,
     patience: int,
     accelerator: str | Accelerator,
 ) -> LitVisionTransformer:
-    """Trains a model.
 
-    Returns:
-        The model with the best validation loss during training.
-    """
     torch.set_float32_matmul_precision("high")
 
     model_checkpoint = ModelCheckpoint(
-        monitor="validation_loss",
-        mode="min",
-        filename="checkpoint-{epoch:02d}-{validation_loss:0.3f}",
+        #monitor="validation_loss",
+        monitor="val_r2",
+        mode="max",
+        filename="checkpoint-{epoch:02d}-{val_r2:0.3f}",
     )
+
+    csv_logger = CSVLogger(save_dir=output_dir)
+
     trainer = lightning.Trainer(
         default_root_dir=output_dir,
         callbacks=[
-            EarlyStopping(monitor="validation_loss", mode="min", patience=patience),
+            EarlyStopping(monitor="val_r2", mode="max", patience=patience, min_delta=1e-4),
             model_checkpoint,
         ],
         max_epochs=max_epochs,
@@ -182,15 +180,29 @@ def train_model_(
         accelerator=accelerator,
         devices=1,
         gradient_clip_val=0.5,
-        logger=CSVLogger(save_dir=output_dir),
+        logger=csv_logger,
         log_every_n_steps=len(train_dl),
+        num_sanity_val_steps=0,
     )
+
     trainer.fit(
         model=model,
         train_dataloaders=train_dl,
         val_dataloaders=valid_dl,
     )
+
     shutil.copy(model_checkpoint.best_model_path, output_dir / "model.ckpt")
+
+
+    # NEW:
+    metrics_df = pd.read_csv(f"{csv_logger.log_dir}/metrics.csv")
+    history_df = metrics_df.pivot_table(
+        index="epoch",
+        values=["training_loss", "validation_loss"],
+        aggfunc="mean",
+    ).reset_index()
+    history_df.to_csv(output_dir / "history.csv", index=False)
+    # END
 
     return LitVisionTransformer.load_from_checkpoint(model_checkpoint.best_model_path)
 
@@ -198,7 +210,7 @@ def train_model_(
 def setup_model_for_training(
     *,
     patient_to_data: Mapping[PatientId, PatientData[GroundTruth]],
-    categories: Sequence[Category] | None,
+    #categories: Sequence[Category] | None,
     bag_size: int,
     batch_size: int,
     num_workers: int,
@@ -235,25 +247,24 @@ def setup_model_for_training(
         ),
     )
 
-    train_dl, train_categories = dataloader_from_patient_data(
+    train_dl = dataloader_from_patient_data(
         patient_data=[patient_to_data[patient] for patient in train_patients],
-        categories=categories,
         bag_size=bag_size,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
         transform=train_transform,
     )
-    del categories  # Let's not accidentally reuse the original categories
-    valid_dl, _ = dataloader_from_patient_data(
+
+    valid_dl = dataloader_from_patient_data(
         patient_data=[patient_to_data[patient] for patient in valid_patients],
-        bag_size=None,  # Use all the patient data for validation
-        categories=train_categories,
-        batch_size=1,
+        bag_size=None,
+        batch_size=2,
         shuffle=False,
         num_workers=num_workers,
         transform=None,
     )
+
     if overlap := set(train_patients) & set(valid_patients):
         raise RuntimeError(
             f"unreachable: unexpected overlap between training and validation set: {overlap}"
@@ -265,6 +276,7 @@ def setup_model_for_training(
     )
     _, _, dim_feats = bags.shape
 
+    """
     # Weigh classes inversely to their occurrence
     category_counts = cast(BagDataset, train_dl.dataset).ground_truths.sum(dim=0)
     cat_ratio_reciprocal = category_counts.sum() / category_counts
@@ -282,11 +294,11 @@ def setup_model_for_training(
             f"Some categories do not have enough samples to meaningfully train a model: {underpopulated_categories}. "
             "You may want to consider removing these categories; the model will likely overfit on the few samples available."
         )
+    """
+
 
     # Train the model
     model = LitVisionTransformer(
-        categories=train_categories,
-        category_weights=category_weights,
         dim_input=dim_feats,
         dim_model=512,
         dim_feedforward=2048,
@@ -302,5 +314,6 @@ def setup_model_for_training(
         slide_table=slide_table,
         feature_dir=feature_dir,
     )
+
 
     return model, train_dl, valid_dl

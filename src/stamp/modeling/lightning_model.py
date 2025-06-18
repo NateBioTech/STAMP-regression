@@ -9,13 +9,14 @@ import torch
 from jaxtyping import Bool, Float
 from packaging.version import Version
 from torch import Tensor, nn, optim
-from torchmetrics.classification import MulticlassAUROC
+from torchmetrics.regression import MeanSquaredError, R2Score
+
 
 import stamp
 from stamp.modeling.data import (
     Bags,
     BagSizes,
-    Category,
+    #Category,
     CoordinatesBatch,
     EncodedTargets,
     PandasLabel,
@@ -30,8 +31,8 @@ class LitVisionTransformer(lightning.LightningModule):
     def __init__(
         self,
         *,
-        categories: Sequence[Category],
-        category_weights: Float[Tensor, "category_weight"],  # noqa: F821
+        #categories: Sequence[Category],
+        #category_weights: Float[Tensor, "category_weight"],  # noqa: F821
         dim_input: int,
         dim_model: int,
         dim_feedforward: int,
@@ -57,13 +58,9 @@ class LitVisionTransformer(lightning.LightningModule):
         """
         super().__init__()
 
-        if len(categories) != len(category_weights):
-            raise ValueError(
-                "the number of category weights has to mathc the number of categories!"
-            )
 
         self.vision_transformer = VisionTransformer(
-            dim_output=len(categories),
+            dim_output=1,
             dim_input=dim_input,
             dim_model=dim_model,
             n_layers=n_layers,
@@ -72,7 +69,15 @@ class LitVisionTransformer(lightning.LightningModule):
             dropout=dropout,
             use_alibi=use_alibi,
         )
-        self.class_weights = category_weights
+
+        # Regression loss and metrics
+        self.loss_fn = nn.MSELoss()
+        self.train_mse = MeanSquaredError()
+        self.valid_mse = MeanSquaredError()
+        self.valid_r2 = R2Score()
+
+
+        #self.class_weights = category_weights
 
         # Check if version is compatible.
         # This should only happen when the model is loaded,
@@ -92,11 +97,11 @@ class LitVisionTransformer(lightning.LightningModule):
                 "Please upgrade stamp to a compatible version."
             )
 
-        self.valid_auroc = MulticlassAUROC(len(categories))
+        #self.valid_auroc = MulticlassAUROC(len(categories))
 
         # Used during deployment
         self.ground_truth_label = ground_truth_label
-        self.categories = np.array(categories)
+        #self.categories = np.array(categories)
         self.train_patients = train_patients
         self.valid_patients = valid_patients
 
@@ -104,11 +109,13 @@ class LitVisionTransformer(lightning.LightningModule):
 
         self.save_hyperparameters()
 
+    #Changed function forward
     def forward(
         self,
         bags: Bags,
     ) -> Float[Tensor, "batch logit"]:
         return self.vision_transformer(bags)
+
 
     def _step(
         self,
@@ -124,10 +131,11 @@ class LitVisionTransformer(lightning.LightningModule):
         logits = self.vision_transformer(
             bags, coords=coords, mask=_mask_from_bags(bags=bags, bag_sizes=bag_sizes)
         )
+        
+        logits = logits.squeeze(-1)  # Ensure correct shape for regression
+        #print(logits)
 
-        loss = nn.functional.cross_entropy(
-            logits, targets.type_as(logits), weight=self.class_weights.type_as(logits)
-        )
+        loss = self.loss_fn(logits, targets)
 
         self.log(
             f"{step_name}_loss",
@@ -138,18 +146,27 @@ class LitVisionTransformer(lightning.LightningModule):
             sync_dist=True,
         )
 
+        #if step_name == "training":
+        #    self.train_mse.update(logits, targets)
+        #    self.log("train_mse", self.train_mse, on_epoch=True, prog_bar=True)
+
         if step_name == "validation":
             # TODO this is a bit ugly, we'd like to have `_step` without special cases
-            self.valid_auroc.update(logits, targets.long().argmax(-1))
-            self.log(
-                f"{step_name}_auroc",
-                self.valid_auroc,
-                on_step=False,
-                on_epoch=True,
-                sync_dist=True,
-            )
+            #self.valid_mse.update(logits, targets)
+            #self.valid_r2.update(logits, targets)
+            #self.log("val_mse", self.valid_mse, on_epoch=True, prog_bar=True)
+            #self.log("val_r2", self.valid_r2, on_epoch=True, prog_bar=True)
 
+            self.valid_mse.update(logits, targets)
+            self.valid_r2.update(logits, targets)
+            self.log_dict({                   
+                "val_mse": self.valid_mse,                    
+                "val_r2":  self.valid_r2,},                
+                on_epoch=True,                
+                prog_bar=True,                
+                sync_dist=True,)
         return loss
+
 
     def training_step(
         self,
@@ -172,6 +189,8 @@ class LitVisionTransformer(lightning.LightningModule):
             batch=batch,
             batch_idx=batch_idx,
         )
+    
+      
 
     def test_step(
         self,
@@ -193,11 +212,23 @@ class LitVisionTransformer(lightning.LightningModule):
         return self.vision_transformer(
             bags, coords=coords, mask=_mask_from_bags(bags=bags, bag_sizes=bag_sizes)
         )
+    
 
-    def configure_optimizers(self) -> optim.Optimizer:
-        optimizer = optim.Adam(self.parameters(), lr=1e-3)
-        return optimizer
-
+    #def configure_optimizers(self) -> optim.Optimizer:
+    #    optimizer = optim.Adam(self.parameters(), lr=1e-3)
+    #     return optimizer
+    # ------------------------------------------------------------------
+    # Testing 
+    def configure_optimizers(self):
+        """AdamW + CosineAnnealingLR (igual que Marugoto)."""
+        opt = torch.optim.AdamW(
+            self.parameters(), lr=3e-4, weight_decay=1e-2
+        )
+        sch = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=30, eta_min=1e-5
+        )
+        return [opt], [sch]
+    # ---------------------------------------------------
 
 def _mask_from_bags(
     *,

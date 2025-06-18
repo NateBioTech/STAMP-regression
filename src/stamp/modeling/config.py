@@ -1,3 +1,7 @@
+"""
+config.py : Configuration models for STAMP-regression
+"""
+
 import os
 from pathlib import Path
 
@@ -33,7 +37,7 @@ class TrainConfig(BaseModel):
     # Training paramenters
     batch_size: int = 64
     max_epochs: int = 64
-    patience: int = 16
+    patience: int = 20
     accelerator: str = "gpu" if torch.cuda.is_available() else "cpu"
 
     # Experimental features
