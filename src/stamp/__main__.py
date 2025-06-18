@@ -79,7 +79,7 @@ def _run_cli(args: argparse.Namespace) -> None:
             # OLD classification line:
             # from stamp.modeling.train import train_categorical_model_
             # NEW regression line:
-            from stamp.modeling.train import train_regression_model_  # <-- changed
+            from stamp.modeling.train import train_regression_model_  # CHANGED
 
             if config.training is None:
                 raise ValueError("no training configuration supplied")
@@ -105,7 +105,7 @@ def _run_cli(args: argparse.Namespace) -> None:
                 output_dir=config.training.output_dir,
                 patient_label=config.training.patient_label,
                 # 'ground_truth_label' becomes 'regression_label'
-                regression_label=config.training.ground_truth_label,  # or rename in your config
+                regression_label=config.training.ground_truth_label,  # or rename in config
                 filename_label=config.training.filename_label,
                 # Dataloader
                 bag_size=config.training.bag_size,
@@ -160,7 +160,7 @@ def _run_cli(args: argparse.Namespace) -> None:
             # OLD classification line:
             # from stamp.modeling.crossval import categorical_crossval_
             # NEW regression line:
-            from stamp.modeling.crossval import regression_crossval_  # <-- changed
+            from stamp.modeling.crossval import regression_crossval_  # < CHANGED
 
             if config.crossval is None:
                 raise ValueError("no crossval configuration supplied")
@@ -185,7 +185,7 @@ def _run_cli(args: argparse.Namespace) -> None:
                 feature_dir=config.crossval.feature_dir,
                 output_dir=config.crossval.output_dir,
                 patient_label=config.crossval.patient_label,
-                regression_label=config.crossval.ground_truth_label,  # or rename in your config
+                regression_label=config.crossval.ground_truth_label,  # or rename in config
                 filename_label=config.crossval.filename_label,
                 n_splits=config.crossval.n_splits,
                 # Dataset and loader
