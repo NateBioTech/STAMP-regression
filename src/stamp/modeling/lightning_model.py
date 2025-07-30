@@ -220,7 +220,7 @@ class LitVisionTransformer(lightning.LightningModule):
     # ------------------------------------------------------------------
     # Testing 
     def configure_optimizers(self):
-        """AdamW + CosineAnnealingLR (igual que Marugoto)."""
+        """AdamW + CosineAnnealingLR (as Marugoto)."""
         opt = torch.optim.AdamW(
             self.parameters(), lr=3e-4, weight_decay=1e-2
         )
