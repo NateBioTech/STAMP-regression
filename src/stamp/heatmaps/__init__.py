@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 
 import logging
-from collections.abc import Collection, Iterable
+from collections.abc import Iterable
 from pathlib import Path
-from typing import cast
 
 import h5py
 import matplotlib.pyplot as plt
@@ -16,17 +15,18 @@ from matplotlib.gridspec import GridSpec
 from PIL import Image
 from torch import Tensor
 from torch._prims_common import DeviceLikeType
+from torch.func import jacrev
 
 from stamp.modeling.data import get_coords, get_stride
 from stamp.modeling.lightning_model import LitVisionTransformer
 from stamp.modeling.vision_transformer import VisionTransformer
 from stamp.preprocessing import supported_extensions
-from stamp.preprocessing.tiling import (Microns, SlideMPP, TilePixels,
-                                        get_slide_mpp_)
+from stamp.preprocessing.tiling import Microns, SlideMPP, TilePixels, get_slide_mpp_
 
 _logger = logging.getLogger("stamp")
 
 Image.MAX_IMAGE_PIXELS = None
+
 
 # ------------------------------------------------------------------------
 # Helper: load rejection thumbnail (same logic as extract_)
@@ -60,8 +60,8 @@ def _get_rejection_thumb(
     # Where False → make it fully transparent (alpha=0)
     mask_array = np.where(
         inclusion_map.transpose()[:, :, None],
-        [255, 255, 255, 255],   # keep pixel
-        [0, 0, 0, 0],           # transparent
+        [255, 255, 255, 255],  # keep pixel
+        [0, 0, 0, 0],  # transparent
     ).astype(np.uint8)
 
     # Resize mask to match thumbnail size
@@ -106,7 +106,6 @@ def _get_rejection_thumb(
 # ------------------------------------------------------------------------
 # GradCAM computation
 # ------------------------------------------------------------------------
-from torch.func import jacrev  # PyTorch ≥2.0
 
 
 def _gradcam_per_category(
@@ -121,9 +120,9 @@ def _gradcam_per_category(
             feats
             * jacrev(
                 lambda bags: model.forward(
-                        bags=bags.unsqueeze(0),
-                        coords=coords.unsqueeze(0),
-                        mask=None,
+                    bags=bags.unsqueeze(0),
+                    coords=coords.unsqueeze(0),
+                    mask=None,
                 ).squeeze(0)
             )(feats)
         )
@@ -193,11 +192,7 @@ def heatmaps_(
     slides = (
         (wsi_dir / slide for slide in slide_paths)
         if slide_paths is not None
-        else (
-            p
-            for ext in supported_extensions
-            for p in wsi_dir.glob(f"**/*{ext}")
-        )
+        else (p for ext in supported_extensions for p in wsi_dir.glob(f"**/*{ext}"))
     )
 
     for wsi_path in slides:
@@ -216,7 +211,9 @@ def heatmaps_(
         with h5py.File(h5_path) as h5:
             feats = torch.tensor(h5["feats"][:]).float().to(device)
             coords_info = get_coords(h5)
-            coords_um = torch.tensor(coords_info.coords_um, dtype=torch.float32, device=device)
+            coords_um = torch.tensor(
+                coords_info.coords_um, dtype=torch.float32, device=device
+            )
             stride_um = Microns(get_stride(coords_um.cpu()))
             tile_size_slide_px = TilePixels(
                 int(round(float(coords_info.tile_size_um) / slide_mpp))
@@ -234,12 +231,15 @@ def heatmaps_(
             coords=coords_um,
         )
 
-    
-        gradcam_2d = _vals_to_im(
-            gradcam,
-            coords_norm[:, [1, 0]],
-            grid_shape,
-        ).cpu().numpy()[..., 0]
+        gradcam_2d = (
+            _vals_to_im(
+                gradcam,
+                coords_norm[:, [1, 0]],
+                grid_shape,
+            )
+            .cpu()
+            .numpy()[..., 0]
+        )
 
         gradcam_2d_up = np.repeat(gradcam_2d, 20, axis=0)
         gradcam_2d_up = np.repeat(gradcam_2d_up, 20, axis=1)
@@ -274,18 +274,22 @@ def heatmaps_(
         scores = []
         for i in range(len(feats)):
             out = model.vision_transformer(
-                bags=feats[i:i+1].unsqueeze(0),
-                coords=coords_um[i:i+1].unsqueeze(0),
+                bags=feats[i : i + 1].unsqueeze(0),
+                coords=coords_um[i : i + 1].unsqueeze(0),
                 mask=torch.zeros(1, 1, dtype=torch.bool, device=device),
             ).squeeze(0)
             scores.append(out)
         scores = torch.stack(scores).view(-1, 1)
 
-        scores_2d = _vals_to_im(
-            scores,
-            coords_norm[:, [1, 0]],
-            grid_shape,
-        ).cpu().numpy()[..., 0]
+        scores_2d = (
+            _vals_to_im(
+                scores,
+                coords_norm[:, [1, 0]],
+                grid_shape,
+            )
+            .cpu()
+            .numpy()[..., 0]
+        )
 
         scores_2d_up = np.repeat(scores_2d, 20, axis=0)
         scores_2d_up = np.repeat(scores_2d_up, 20, axis=1)
@@ -302,15 +306,18 @@ def heatmaps_(
         # Optional: inverse transform scores if a scaler is available
         scaler_path = checkpoint_path.parent / "scaler.joblib"
         if scaler_path.exists():
-            from sklearn.externals import \
-                joblib  # or just `import joblib` if you're using it directly
+            from sklearn.externals import (
+                joblib,
+            )  # or just `import joblib` if you're using it directly
+
             scaler = joblib.load(scaler_path)
             flat_scores = scores_2d_up.flatten().reshape(-1, 1)
-            scores_2d_up = scaler.inverse_transform(flat_scores).reshape(scores_2d_up.shape)
+            scores_2d_up = scaler.inverse_transform(flat_scores).reshape(
+                scores_2d_up.shape
+            )
 
         # Normalize with fixed min=0
         scores_norm = scores_2d_up / (scores_2d_up.max() + 1e-8)
-
 
         alpha_mask_pred = (scores_norm > 0).astype(float)
 
@@ -354,7 +361,6 @@ def heatmaps_(
         overlay.save(overlay_path)
         _logger.info(f"Saved overlay image to {overlay_path}")
 
-
         # ----------- Overview Figure (Matplotlib style) -----------
         fig = plt.figure(figsize=(12, 12))
         gs = GridSpec(3, 1, height_ratios=[1, 1, 1], hspace=0.5)
@@ -370,7 +376,13 @@ def heatmaps_(
         im_gradcam = ax_gradcam.imshow(gradcam_norm, cmap="plasma", alpha=alpha_mask)
         ax_gradcam.set_title("Grad-CAM")
         ax_gradcam.axis("off")
-        cbar0 = fig.colorbar(im_gradcam, ax=ax_gradcam, orientation="horizontal", fraction=0.046, pad=0.04)
+        cbar0 = fig.colorbar(
+            im_gradcam,
+            ax=ax_gradcam,
+            orientation="horizontal",
+            fraction=0.046,
+            pad=0.04,
+        )
         cbar0.set_label("Attention Score")
 
         # --- HEATMAP (fila 2) ---
@@ -380,10 +392,14 @@ def heatmaps_(
         norm = Normalize(vmin=vmin, vmax=vmax, clip=True)
 
         ax_pred = fig.add_subplot(gs[2, 0])
-        im_pred = ax_pred.imshow(scores_2d_up, cmap=cmap_pred, norm=norm, alpha=alpha_mask_pred)
+        im_pred = ax_pred.imshow(
+            scores_2d_up, cmap=cmap_pred, norm=norm, alpha=alpha_mask_pred
+        )
         ax_pred.set_title("Prediction Heatmap")
         ax_pred.axis("off")
-        cbar1 = fig.colorbar(im_pred, ax=ax_pred, orientation="horizontal", fraction=0.046, pad=0.04)
+        cbar1 = fig.colorbar(
+            im_pred, ax=ax_pred, orientation="horizontal", fraction=0.046, pad=0.04
+        )
         cbar1.set_label(f"Prediction Score ({vmin:.2f}–{vmax:.2f})")
 
         # --- Save figure ---
@@ -392,8 +408,6 @@ def heatmaps_(
         plt.close(fig)
         _logger.info(f"Saved matplotlib overview to {overview_path}")
 
-
-        
         # ----------- Export top and bottom tiles ----------
         coords_np = coords_um.cpu().numpy()
         scores_np = scores.cpu().numpy().flatten()
@@ -418,8 +432,8 @@ def heatmaps_(
                 level=0,
                 size=(tile_size_slide_px,) * 2,
             ).convert("RGB")
-            region.save(top_dir / f"{wsi_path.stem}_top{i+1}_{score:.3f}.png")
-            _logger.info(f"Saved top-{i+1} tile to {top_dir}")
+            region.save(top_dir / f"{wsi_path.stem}_top{i + 1}_{score:.3f}.png")
+            _logger.info(f"Saved top-{i + 1} tile to {top_dir}")
 
         # Export bottom-k tiles
         for i, (coord, score) in enumerate(coords_scores_sorted[-bottomk:]):
@@ -429,5 +443,5 @@ def heatmaps_(
                 level=0,
                 size=(tile_size_slide_px,) * 2,
             ).convert("RGB")
-            region.save(bottom_dir / f"{wsi_path.stem}_bottom{i+1}_{score:.3f}.png")
-            _logger.info(f"Saved bottom-{i+1} tile to {bottom_dir}")
+            region.save(bottom_dir / f"{wsi_path.stem}_bottom{i + 1}_{score:.3f}.png")
+            _logger.info(f"Saved bottom-{i + 1} tile to {bottom_dir}")
